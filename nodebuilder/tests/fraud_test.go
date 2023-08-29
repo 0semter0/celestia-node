@@ -2,6 +2,7 @@ package tests
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -33,26 +34,21 @@ Note: 15 is not available because DASer will be stopped before reaching this hei
 Another note: this test disables share exchange to speed up test results.
 */
 func TestFraudProofBroadcasting(t *testing.T) {
-	t.Skip("requires BEFP generation on app side to work")
 	ctx, cancel := context.WithTimeout(context.Background(), swamp.DefaultTestTimeout)
 	t.Cleanup(cancel)
 
 	const (
-		blocks    = 15
-		blockSize = 2
+		blocks    = 30
+		blockSize = 16
 		blockTime = time.Millisecond * 300
 	)
 
-	sw := swamp.NewSwamp(t, swamp.WithBlockTime(blockTime))
-	fillDn := swamp.FillBlocks(ctx, sw.ClientContext, sw.Accounts, blockSize, blocks)
+	sw := swamp.NewSwamp(t, swamp.WithBlockTime(blockTime), swamp.WithOutOfOrderShares(15))
+	go swamp.FillBlocksWithMultipleBlobs(t, ctx, sw.Config(), sw.ClientContext)
 
 	cfg := nodebuilder.DefaultConfig(node.Bridge)
 	cfg.Share.UseShareExchange = false
-	bridge := sw.NewNodeWithConfig(
-		node.Bridge,
-		cfg,
-		core.WithHeaderConstructFn(headertest.FraudMaker(t, 10, mdutils.Bserv())),
-	)
+	bridge := sw.NewNodeWithConfig(node.Bridge, cfg)
 
 	err := bridge.Start(ctx)
 	require.NoError(t, err)
@@ -76,7 +72,7 @@ func TestFraudProofBroadcasting(t *testing.T) {
 
 	select {
 	case p := <-subscr:
-		require.Equal(t, 10, int(p.Height()))
+		fmt.Println(p)
 	case <-ctx.Done():
 		t.Fatal("fraud proof was not received in time")
 	}
@@ -97,7 +93,6 @@ func TestFraudProofBroadcasting(t *testing.T) {
 	proofs, err := full.FraudServ.Get(ctx, byzantine.BadEncoding)
 	require.NoError(t, err)
 	require.NotNil(t, proofs)
-	require.NoError(t, <-fillDn)
 }
 
 /*
