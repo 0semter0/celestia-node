@@ -3,6 +3,8 @@ package peers
 import (
 	"fmt"
 	"time"
+
+	"github.com/celestiaorg/celestia-node/nodebuilder/node"
 )
 
 type Parameters struct {
@@ -19,6 +21,14 @@ type Parameters struct {
 
 	// EnableBlackListing turns on blacklisting for misbehaved peers
 	EnableBlackListing bool
+
+	// NodeType is the type of node that is running
+	// Used for protocol compatibility validation
+	nodeType node.Type
+
+	// NetworkID is the network ID of the node
+	// Used for protocol compatibility validation
+	networkID string
 }
 
 // Validate validates the values in Parameters
@@ -33,6 +43,14 @@ func (p *Parameters) Validate() error {
 
 	if p.GcInterval <= 0 {
 		return fmt.Errorf("peer-manager: garbage collection interval must be positive")
+	}
+
+	if p.nodeType.String() == "unknown" {
+		return fmt.Errorf("peer-manager: node type must be set")
+	}
+
+	if p.networkID == "" {
+		return fmt.Errorf("peer-manager: network ID must be set")
 	}
 
 	return nil
@@ -54,6 +72,16 @@ func DefaultParameters() Parameters {
 		// are resolved
 		EnableBlackListing: false,
 	}
+}
+
+// WithNodeType sets the node type for the peer manager parameters.
+func (params *Parameters) WithNodeType(nodeType node.Type) {
+	params.nodeType = nodeType
+}
+
+// WithNetworkID sets the network ID for the peer manager parameters.
+func (params *Parameters) WithNetworkID(networkID string) {
+	params.networkID = networkID
 }
 
 // WithMetrics turns on metric collection in peer manager.

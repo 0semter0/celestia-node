@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -15,14 +16,19 @@ import (
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
+	"github.com/libp2p/go-libp2p/core/protocol"
 	"github.com/libp2p/go-libp2p/p2p/host/eventbus"
 	"github.com/libp2p/go-libp2p/p2p/net/conngater"
 
 	libhead "github.com/celestiaorg/go-header"
 
 	"github.com/celestiaorg/celestia-node/header"
+	"github.com/celestiaorg/celestia-node/nodebuilder/node"
 	"github.com/celestiaorg/celestia-node/share"
+	"github.com/celestiaorg/celestia-node/share/p2p"
 	"github.com/celestiaorg/celestia-node/share/p2p/discovery"
+	"github.com/celestiaorg/celestia-node/share/p2p/shrexeds"
+	"github.com/celestiaorg/celestia-node/share/p2p/shrexnd"
 	"github.com/celestiaorg/celestia-node/share/p2p/shrexsub"
 )
 
@@ -131,6 +137,7 @@ func NewManager(
 					log.Debugw("got blacklisted peer from discovery", "peer", peerID.String())
 					return
 				}
+
 				s.fullNodes.add(peerID)
 				log.Debugw("added to full nodes", "peer", peerID)
 				return
@@ -347,6 +354,11 @@ func (m *Manager) Validate(_ context.Context, peerID peer.ID, msg shrexsub.Notif
 		return pubsub.ValidationReject
 	}
 
+	if !m.isSupported(peerID) {
+		logger.Debug("received message from peer with incompatible protocol, reject validation")
+		return pubsub.ValidationReject
+	}
+
 	if msg.Height == 0 {
 		logger.Debug("received message with 0 height")
 		return pubsub.ValidationReject
@@ -416,6 +428,43 @@ func (m *Manager) blacklistPeers(reason blacklistPeerReason, peerIDs ...peer.ID)
 
 func (m *Manager) isBlacklistedPeer(peerID peer.ID) bool {
 	return !m.connGater.InterceptPeerDial(peerID)
+}
+
+func (m *Manager) isSupported(peerID peer.ID) bool {
+	switch m.params.nodeType {
+	case node.Light:
+		protoID := p2p.ProtocolID(m.params.networkID, shrexnd.ProtocolString)
+		supportedProtos, err := m.host.
+			Peerstore().
+			SupportsProtocols(peerID, protoID)
+		if err != nil {
+			log.Debugw("peer does not support protocol", "peer", peerID.String(), "proto", protoID)
+			return false
+		}
+
+		return len(supportedProtos) == 1 && supportedProtos[0] == protoID
+
+	case node.Full:
+		protoIDs := []protocol.ID{
+			p2p.ProtocolID(m.params.networkID, shrexeds.ProtocolString),
+			p2p.ProtocolID(m.params.networkID, shrexnd.ProtocolString),
+		}
+		supportedProtos, err := m.host.
+			Peerstore().
+			SupportsProtocols(peerID, protoIDs...)
+		if err != nil {
+			log.Debugw("peer does not support protocol", "peer", peerID.String(), "protos", protoIDs)
+			return false
+		}
+
+		return len(supportedProtos) == 2 &&
+			slices.Contains(supportedProtos, protoIDs[0]) &&
+			slices.Contains(supportedProtos, protoIDs[1])
+
+	default:
+		log.Debug("unrecognized node type for peer protocol validation")
+		return false
+	}
 }
 
 func (m *Manager) isBlacklistedHash(hash share.DataHash) bool {
