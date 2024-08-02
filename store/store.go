@@ -81,7 +81,6 @@ func NewStore(params *Parameters, basePath string) (*Store, error) {
 		if err != nil {
 			return nil, fmt.Errorf("failed to create recent eds cache: %w", err)
 		}
-
 	}
 
 	store := &Store{
@@ -92,7 +91,7 @@ func NewStore(params *Parameters, basePath string) (*Store, error) {
 	return store, nil
 }
 
-func (s *Store) Close() error {
+func (s *Store) Stop(context.Context) error {
 	return s.metrics.close()
 }
 
