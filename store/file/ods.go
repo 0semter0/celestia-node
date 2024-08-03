@@ -135,11 +135,16 @@ func writeODSFile(w io.Writer, eds *rsmt2d.ExtendedDataSquare, axisRoots *share.
 }
 
 // writeQ1 writes the first quadrant of the square to the writer. It writes the quadrant in row-major
-// order
+// order. Write finishes once all the shares are written or on the first instance of tail padding share.
+// Tail padding share are constant and aren't stored.
 func writeQ1(w io.Writer, eds *rsmt2d.ExtendedDataSquare) error {
 	for i := range eds.Width() / 2 {
 		for j := range eds.Width() / 2 {
 			shr := eds.GetCell(i, j) // TODO: Avoid copying inside GetCell
+			if share.GetNamespace(shr).Equals(share.TailPaddingNamespace) {
+				return nil
+			}
+
 			_, err := w.Write(shr)
 			if err != nil {
 				return fmt.Errorf("writing share: %w", err)
@@ -391,6 +396,8 @@ func readAxisHalf(r io.ReaderAt, axisTp rsmt2d.Axis, shrLn, edsLn, offset, axisI
 	}
 }
 
+// readRowHalf reads specific Row half from the file in a single IO operation.
+// If some or all shares are missing, tail padding shares are returned instead.
 func readRowHalf(fl io.ReaderAt, shrLn, edsLn, offset, rowIdx int) ([]share.Share, error) {
 	odsLn := edsLn / 2
 	rowOffset := rowIdx * odsLn * shrLn
@@ -398,16 +405,27 @@ func readRowHalf(fl io.ReaderAt, shrLn, edsLn, offset, rowIdx int) ([]share.Shar
 
 	shares := make([]share.Share, odsLn)
 	axsData := make([]byte, odsLn*shrLn)
-	if _, err := fl.ReadAt(axsData, int64(offset)); err != nil {
+	n, err := fl.ReadAt(axsData, int64(offset))
+	if err != nil && !errors.Is(err, io.EOF) {
+		// unknown error
 		return nil, err
 	}
 
+	shrsRead := n / shrLn
 	for i := range shares {
+		if i > shrsRead-1 {
+			// partial or empty row was read
+			// fill the rest with tail padding it
+			shares[i] = share.TailPadding()
+			continue
+		}
 		shares[i] = axsData[i*shrLn : (i+1)*shrLn]
 	}
 	return shares, nil
 }
 
+// readColHalf reads specific Col half from the file in a single IO operation.
+// If some or all shares are missing, tail padding shares are returned instead.
 func readColHalf(fl io.ReaderAt, shrLn, edsLn, offset, colIdx int) ([]share.Share, error) {
 	odsLn := edsLn / 2
 	shares := make([]share.Share, odsLn)
@@ -416,9 +434,20 @@ func readColHalf(fl io.ReaderAt, shrLn, edsLn, offset, colIdx int) ([]share.Shar
 		offset := offset + pos*shrLn
 
 		shr := make(share.Share, shrLn)
-		if _, err := fl.ReadAt(shr, int64(offset)); err != nil {
+		n, err := fl.ReadAt(shr, int64(offset))
+		if err != nil && !errors.Is(err, io.EOF) {
+			// unknown error
 			return nil, err
 		}
+		if n == 0 {
+			// no shares left
+			// fill the rest with tail padding
+			for ; i < len(shares); i++ {
+				shares[i] = share.TailPadding()
+			}
+			return shares, nil
+		}
+		// we got a share
 		shares[i] = shr
 	}
 	return shares, nil

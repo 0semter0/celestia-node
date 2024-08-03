@@ -3,14 +3,17 @@ package eds
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
-	"github.com/celestiaorg/celestia-node/share"
-	"github.com/celestiaorg/rsmt2d"
 	"io"
+
+	"github.com/celestiaorg/rsmt2d"
+
+	"github.com/celestiaorg/celestia-node/share"
 )
 
 // ReadEDS reads up EDS out of the io.Reader until io.EOF.
-// TODO(@Wondertan): Should be come ReadAccessor.
+// TODO(@Wondertan): Should become ReadAccessor.
 func ReadEDS(ctx context.Context, reader io.Reader, root *share.AxisRoots) (*rsmt2d.ExtendedDataSquare, error) {
 	odsSize := len(root.RowRoots) / 2
 	shares, err := ReadShares(reader, share.Size, odsSize)
@@ -38,19 +41,23 @@ func ReadEDS(ctx context.Context, reader io.Reader, root *share.AxisRoots) (*rsm
 }
 
 // ReadShares reads shares from the provided io.Reader until EOF. If EOF is reached, the remaining shares
-// are populated as padding share. Provided reader must contain shares in row-major order.
+// are populated as tail padding shares. Provided reader must contain shares in row-major order.
 func ReadShares(r io.Reader, shareSize, odsSize int) ([]share.Share, error) {
 	shares := make([]share.Share, odsSize*odsSize)
 	var total int
 	for i := range shares {
 		shr := make(share.Share, shareSize)
 		n, err := io.ReadFull(r, shr)
+		if errors.Is(err, io.EOF) {
+			for ; i < len(shares); i++ {
+				shares[i] = share.TailPadding()
+			}
+			return shares, nil
+		}
 		if err != nil {
-			return nil, fmt.Errorf("reading share: %w, bytes read: %v", err, total+n)
+			return nil, fmt.Errorf("reading shares: %w, bytes read: %v", err, total+n)
 		}
-		if n != shareSize {
-			return nil, fmt.Errorf("share size mismatch: expected %v, got %v", shareSize, n)
-		}
+
 		shares[i] = shr
 		total += n
 	}
