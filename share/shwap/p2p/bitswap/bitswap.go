@@ -103,7 +103,7 @@ func NewServer(
 	net network.BitSwapNetwork,
 	bstore blockstore.Blockstore,
 	opts ...server.Option,
-) *server.Server {
+) []server.Option {
 	opts = append(
 		opts,
 		server.ProvideEnabled(providesEnabled),
@@ -113,12 +113,7 @@ func NewServer(
 		server.MaxOutstandingBytesPerPeer(outstandingBytesPerPeer),
 	)
 
-	return server.New(
-		ctx,
-		net,
-		bstore,
-		opts...,
-	)
+	return opts
 }
 
 // TODO(@Wondertan): We have to use the protocol defined by Bitswap here

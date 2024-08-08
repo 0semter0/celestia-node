@@ -4,14 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
-
 	"github.com/ipfs/boxo/bitswap/client"
-	"github.com/ipfs/boxo/bitswap/network"
-	"github.com/ipfs/boxo/bitswap/server"
+
 	"github.com/ipfs/boxo/blockstore"
 	"github.com/ipfs/boxo/exchange"
 	"github.com/ipfs/go-datastore"
-	routinghelpers "github.com/libp2p/go-libp2p-routing-helpers"
 	hst "github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/protocol"
 	"go.uber.org/fx"
@@ -35,16 +32,9 @@ const (
 // dataExchange provides a constructor for IPFS block's DataExchange over BitSwap.
 func dataExchange(params bitSwapParams) exchange.SessionExchange {
 	prefix := protocolID(params.Net)
-	net := network.NewFromIpfsHost(params.Host, &routinghelpers.Null{}, network.Prefix(prefix))
-	srvr := server.New(
-		params.Ctx,
-		net,
-		params.Bs,
-		server.ProvideEnabled(false), // we don't provide blocks over DHT
-		// NOTE: These below are required for our protocol to work reliably.
-		// // See https://github.com/celestiaorg/celestia-node/issues/732
-		server.SetSendDontHaves(false),
-	)
+	net := bitswap.NewNetwork(params.Host, prefix)
+	srv := bitswap.NewServer(params.Ctx, net, params.Bs)
+	cl := bitswap.NewClient(params.Ctx, net, params.Bs)
 
 	clnt := client.New(
 		params.Ctx,
@@ -58,14 +48,14 @@ func dataExchange(params bitSwapParams) exchange.SessionExchange {
 
 	params.Lifecycle.Append(fx.Hook{
 		OnStop: func(_ context.Context) (err error) {
-			err = errors.Join(err, clnt.Close())
-			err = errors.Join(err, srvr.Close())
+			err = errors.Join(err, srv.Close())
+			err = errors.Join(err, cl.Close())
 			net.Stop()
 			return err
 		},
 	})
 
-	return clnt
+	return cl
 }
 
 func blockstoreFromDatastore(ctx context.Context, ds datastore.Batching) (blockstore.Blockstore, error) {
