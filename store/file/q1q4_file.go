@@ -46,10 +46,16 @@ func OpenQ1Q4File(path string) (*Q1Q4File, error) {
 }
 
 func CreateQ1Q4File(path string, roots *share.AxisRoots, eds *rsmt2d.ExtendedDataSquare) (*Q1Q4File, error) {
-	ods, err := CreateODSFile(path, roots, eds)
-	if err != nil {
-		return nil, err
+	type res struct {
+		ods *ODSFile
+		err error
 	}
+	resCh := make(chan res)
+	go func() {
+		// creating the file in parallel reduces ~27% of time taken
+		ods, err := CreateODSFile(path, roots, eds)
+		resCh <- res{ods: ods, err: err}
+	}()
 
 	mod := os.O_RDWR | os.O_CREATE | os.O_EXCL // ensure we fail if already exist
 	f, err := os.OpenFile(path+q1q4FileExtension, mod, 0o666)
@@ -75,8 +81,13 @@ func CreateQ1Q4File(path string, roots *share.AxisRoots, eds *rsmt2d.ExtendedDat
 		return nil, fmt.Errorf("syncing Q4 file: %w", err)
 	}
 
+	r := <-resCh
+	if r.err != nil {
+		return nil, r.err
+	}
+
 	return &Q1Q4File{
-		ods:  ods,
+		ods:  r.ods,
 		file: f,
 	}, nil
 }

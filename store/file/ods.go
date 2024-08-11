@@ -96,7 +96,7 @@ func CreateODSFile(
 
 	err = f.Sync()
 	if err != nil {
-		return nil, fmt.Errorf("syncing file: %w", err)
+		return nil, fmt.Errorf("syncing ODS file: %w", err)
 	}
 
 	return &ODSFile{
