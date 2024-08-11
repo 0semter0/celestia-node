@@ -18,9 +18,13 @@ import (
 
 var _ eds.AccessorStreamer = (*ODSFile)(nil)
 
-// writeBufferSize defines buffer size for optimized batched writes into the file system.
-// TODO(@Wondertan): Consider making it configurable
-const writeBufferSize = 64 << 10
+const (
+	// writeBufferSize defines buffer size for optimized batched writes into the file system.
+	// TODO(@Wondertan): Consider making it configurable
+	writeBufferSize = 64 << 10
+	// odsFileExtension speaks for itself.
+	odsFileExtension = ".ods"
+)
 
 // ErrEmptyFile signals that the ODS file is empty.
 // This helps avoid storing empty block EDSes.
@@ -48,7 +52,7 @@ type ODSFile struct {
 
 // OpenODSFile opens an existing file. File has to be closed after usage.
 func OpenODSFile(path string) (*ODSFile, error) {
-	f, err := os.Open(path)
+	f, err := os.Open(path + odsFileExtension)
 	if err != nil {
 		return nil, err
 	}
@@ -72,7 +76,7 @@ func CreateODSFile(
 	eds *rsmt2d.ExtendedDataSquare,
 ) (*ODSFile, error) {
 	mod := os.O_RDWR | os.O_CREATE | os.O_EXCL // ensure we fail if already exist
-	f, err := os.OpenFile(path, mod, 0o666)
+	f, err := os.OpenFile(path+odsFileExtension, mod, 0o666)
 	if err != nil {
 		return nil, fmt.Errorf("file create: %w", err)
 	}
