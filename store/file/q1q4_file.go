@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"sync"
 
 	"github.com/celestiaorg/rsmt2d"
 
@@ -24,8 +25,11 @@ const q1q4FileExtension = ".q4"
 // Reading from the fourth quadrant allows to serve samples from Q2 and Q4 quadrants of the square,
 // without the need to read entire Q1.
 type Q1Q4File struct {
+	path string
 	ods  *ODSFile
-	file *os.File
+
+	fileOnce sync.Once
+	file     *os.File
 }
 
 func OpenQ1Q4File(path string) (*Q1Q4File, error) {
@@ -34,15 +38,18 @@ func OpenQ1Q4File(path string) (*Q1Q4File, error) {
 		return nil, err
 	}
 
-	f, err := os.Open(path + q1q4FileExtension)
-	if err != nil {
-		return nil, err
-	}
-
 	return &Q1Q4File{
+		path: path,
 		ods:  ods,
-		file: f,
 	}, nil
+}
+
+func (f *Q1Q4File) open() (err error) {
+	f.fileOnce.Do(func() {
+		f.file, err = os.Open(f.path + q1q4FileExtension)
+	})
+
+	return err
 }
 
 func CreateQ1Q4File(path string, roots *share.AxisRoots, eds *rsmt2d.ExtendedDataSquare) (*Q1Q4File, error) {
@@ -86,10 +93,12 @@ func CreateQ1Q4File(path string, roots *share.AxisRoots, eds *rsmt2d.ExtendedDat
 		return nil, r.err
 	}
 
-	return &Q1Q4File{
+	q4 := &Q1Q4File{
 		ods:  r.ods,
 		file: f,
-	}, nil
+	}
+	q4.fileOnce.Do(func() {}) // drain fileOnce to prevent reopen
+	return q4, nil
 }
 
 func CreateEmptyQ1Q4File(path string) error {
@@ -150,7 +159,7 @@ func Q1Q4Exists(path string) (bool, error) {
 	return errOds == nil && errQ4 == nil, nil
 }
 
-// writeQ4 writes the frth quadrant of the square to the writer. iIt writes the quadrant in row-major
+// writeQ4 writes the forth quadrant of the square to the writer. It writes the quadrant in row-major
 // order
 func writeQ4(w io.Writer, eds *rsmt2d.ExtendedDataSquare) error {
 	half := eds.Width() / 2
@@ -179,7 +188,7 @@ func (f *Q1Q4File) AxisRoots(ctx context.Context) (*share.AxisRoots, error) {
 }
 
 func (f *Q1Q4File) Sample(ctx context.Context, rowIdx, colIdx int) (shwap.Sample, error) {
-	// use native AxisHalf implementation, to read axis from Q4 quandrant when possible
+	// use native AxisHalf implementation, to read axis from Q4 when possible
 	half, err := f.AxisHalf(ctx, rsmt2d.Row, rowIdx)
 	if err != nil {
 		return shwap.Sample{}, fmt.Errorf("reading axis: %w", err)
@@ -236,6 +245,10 @@ func (f *Q1Q4File) readAxisHalf(ctx context.Context, axisType rsmt2d.Axis, axisI
 	q4AxisIdx := axisIdx - size/2
 	if q4AxisIdx < 0 {
 		return eds.AxisHalf{}, fmt.Errorf("invalid axis index for Q4: %d", axisIdx)
+	}
+
+	if err := f.open(); err != nil {
+		return eds.AxisHalf{}, fmt.Errorf("opening lazy Q4 file: %w", err)
 	}
 
 	axisHalf, err := readAxisHalf(f.file, axisType, f.ods.ShareSize(), size, 0, q4AxisIdx)
