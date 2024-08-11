@@ -3,8 +3,11 @@ package file
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"io"
+	"os"
+	"sync"
 
 	"github.com/celestiaorg/rsmt2d"
 
@@ -15,12 +18,18 @@ import (
 
 var _ eds.AccessorStreamer = (*Q1Q4File)(nil)
 
-// Q1Q4File represents a file that contains the first and fourth quadrants of an extended data
+const q1q4FileExtension = ".q4"
+
+// Q1Q4File is an Accessor that contains the first and fourth quadrants of an extended data
 // square. It extends the ODSFile with the ability to read the fourth quadrant of the square.
 // Reading from the fourth quadrant allows to serve samples from Q2 and Q4 quadrants of the square,
 // without the need to read entire Q1.
 type Q1Q4File struct {
-	ods *ODSFile
+	path string
+	ods  *ODSFile
+
+	fileOnce sync.Once
+	file     *os.File
 }
 
 func OpenQ1Q4File(path string) (*Q1Q4File, error) {
@@ -30,18 +39,39 @@ func OpenQ1Q4File(path string) (*Q1Q4File, error) {
 	}
 
 	return &Q1Q4File{
-		ods: ods,
+		path: path,
+		ods:  ods,
 	}, nil
 }
 
+func (f *Q1Q4File) open() (err error) {
+	f.fileOnce.Do(func() {
+		f.file, err = os.Open(f.path + q1q4FileExtension)
+	})
+
+	return err
+}
+
 func CreateQ1Q4File(path string, roots *share.AxisRoots, eds *rsmt2d.ExtendedDataSquare) (*Q1Q4File, error) {
-	ods, err := CreateODSFile(path, roots, eds)
+	type res struct {
+		ods *ODSFile
+		err error
+	}
+	resCh := make(chan res)
+	go func() {
+		// creating the file in parallel reduces ~27% of time taken
+		ods, err := CreateODSFile(path, roots, eds)
+		resCh <- res{ods: ods, err: err}
+	}()
+
+	mod := os.O_RDWR | os.O_CREATE | os.O_EXCL // ensure we fail if already exist
+	f, err := os.OpenFile(path+q1q4FileExtension, mod, 0o666)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("creating Q4 file: %w", err)
 	}
 
 	// buffering gives us ~4x speed up
-	buf := bufio.NewWriterSize(ods.fl, writeBufferSize)
+	buf := bufio.NewWriterSize(f, writeBufferSize)
 
 	err = writeQ4(buf, eds)
 	if err != nil {
@@ -53,17 +83,83 @@ func CreateQ1Q4File(path string, roots *share.AxisRoots, eds *rsmt2d.ExtendedDat
 		return nil, fmt.Errorf("flushing Q4: %w", err)
 	}
 
-	err = ods.fl.Sync()
+	err = f.Sync()
 	if err != nil {
-		return nil, fmt.Errorf("syncing file: %w", err)
+		return nil, fmt.Errorf("syncing Q4 file: %w", err)
 	}
 
-	return &Q1Q4File{
-		ods: ods,
-	}, nil
+	r := <-resCh
+	if r.err != nil {
+		return nil, r.err
+	}
+
+	q4 := &Q1Q4File{
+		ods:  r.ods,
+		file: f,
+	}
+	q4.fileOnce.Do(func() {}) // drain fileOnce to prevent reopen
+	return q4, nil
 }
 
-// writeQ4 writes the frth quadrant of the square to the writer. iIt writes the quadrant in row-major
+func CreateEmptyQ1Q4File(path string) error {
+	f, err := os.Create(path + odsFileExtension)
+	if err != nil {
+		return fmt.Errorf("creating empty ODS file: %w", err)
+	}
+	if err = f.Close(); err != nil {
+		return fmt.Errorf("closing empty ODS file: %w", err)
+	}
+
+	f, err = os.Create(path + q1q4FileExtension)
+	if err != nil {
+		return fmt.Errorf("creating empty Q4 file: %w", err)
+	}
+	if err = f.Close(); err != nil {
+		return fmt.Errorf("closing empty Q4 file: %w", err)
+	}
+	return nil
+}
+
+func RemoveQ1Q4(path string) error {
+	err := os.Remove(path + odsFileExtension)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("removing ODS %s: %w", path+odsFileExtension, err)
+	}
+
+	err = os.Remove(path + q1q4FileExtension)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("removing Q4 %s: %w", path+q1q4FileExtension, err)
+	}
+	return nil
+}
+
+func LinkQ1Q4File(filepath, linkpath string) error {
+	err := os.Link(filepath+odsFileExtension, linkpath+odsFileExtension)
+	if err != nil && !errors.Is(err, os.ErrExist) {
+		return fmt.Errorf("creating ODS hardlink: %w", err)
+	}
+
+	err = os.Link(filepath+q1q4FileExtension, linkpath+q1q4FileExtension)
+	if err != nil && !errors.Is(err, os.ErrExist) {
+		return fmt.Errorf("creating Q4 hardlink: %w", err)
+	}
+
+	return nil
+}
+
+func Q1Q4Exists(path string) (bool, error) {
+	_, errOds := os.Stat(path + odsFileExtension)
+	if errOds != nil && !errors.Is(errOds, os.ErrNotExist) {
+		return false, errOds
+	}
+	_, errQ4 := os.Stat(path + q1q4FileExtension)
+	if errQ4 != nil && !errors.Is(errQ4, os.ErrNotExist) {
+		return false, errQ4
+	}
+	return errOds == nil && errQ4 == nil, nil
+}
+
+// writeQ4 writes the forth quadrant of the square to the writer. It writes the quadrant in row-major
 // order
 func writeQ4(w io.Writer, eds *rsmt2d.ExtendedDataSquare) error {
 	half := eds.Width() / 2
@@ -92,7 +188,7 @@ func (f *Q1Q4File) AxisRoots(ctx context.Context) (*share.AxisRoots, error) {
 }
 
 func (f *Q1Q4File) Sample(ctx context.Context, rowIdx, colIdx int) (shwap.Sample, error) {
-	// use native AxisHalf implementation, to read axis from Q4 quandrant when possible
+	// use native AxisHalf implementation, to read axis from Q4 when possible
 	half, err := f.AxisHalf(ctx, rsmt2d.Row, rowIdx)
 	if err != nil {
 		return shwap.Sample{}, fmt.Errorf("reading axis: %w", err)
@@ -104,16 +200,17 @@ func (f *Q1Q4File) Sample(ctx context.Context, rowIdx, colIdx int) (shwap.Sample
 	return shwap.SampleFromShares(shares, rsmt2d.Row, rowIdx, colIdx)
 }
 
-func (f *Q1Q4File) AxisHalf(_ context.Context, axisType rsmt2d.Axis, axisIdx int) (eds.AxisHalf, error) {
-	if axisIdx < f.ods.size()/2 {
-		half, err := f.ods.readAxisHalf(axisType, axisIdx)
+func (f *Q1Q4File) AxisHalf(ctx context.Context, axisType rsmt2d.Axis, axisIdx int) (eds.AxisHalf, error) {
+	size := f.Size(ctx) // TODO(@Wondertan): Should return error.
+	if axisIdx < size/2 {
+		half, err := f.ods.AxisHalf(ctx, axisType, axisIdx)
 		if err != nil {
 			return eds.AxisHalf{}, fmt.Errorf("reading axis half: %w", err)
 		}
 		return half, nil
 	}
 
-	return f.readAxisHalfFromQ4(axisType, axisIdx)
+	return f.readAxisHalf(ctx, axisType, axisIdx)
 }
 
 func (f *Q1Q4File) RowNamespaceData(ctx context.Context,
@@ -143,32 +240,24 @@ func (f *Q1Q4File) Close() error {
 	return f.ods.Close()
 }
 
-func (f *Q1Q4File) readAxisHalfFromQ4(axisType rsmt2d.Axis, axisIdx int) (eds.AxisHalf, error) {
-	q4idx := axisIdx - f.ods.size()/2
-	if q4idx < 0 {
+func (f *Q1Q4File) readAxisHalf(ctx context.Context, axisType rsmt2d.Axis, axisIdx int) (eds.AxisHalf, error) {
+	size := f.Size(ctx)
+	q4AxisIdx := axisIdx - size/2
+	if q4AxisIdx < 0 {
 		return eds.AxisHalf{}, fmt.Errorf("invalid axis index for Q4: %d", axisIdx)
 	}
-	offset := f.ods.sharesOffset()
-	switch axisType {
-	case rsmt2d.Col:
-		shares, err := readCol(f.ods.fl, f.ods.hdr, offset, 1, q4idx)
-		if err != nil {
-			return eds.AxisHalf{}, err
-		}
-		return eds.AxisHalf{
-			Shares:   shares,
-			IsParity: true,
-		}, nil
-	case rsmt2d.Row:
-		shares, err := readRow(f.ods.fl, f.ods.hdr, offset, 1, q4idx)
-		if err != nil {
-			return eds.AxisHalf{}, err
-		}
-		return eds.AxisHalf{
-			Shares:   shares,
-			IsParity: true,
-		}, nil
-	default:
-		return eds.AxisHalf{}, fmt.Errorf("invalid axis type: %d", axisType)
+
+	if err := f.open(); err != nil {
+		return eds.AxisHalf{}, fmt.Errorf("opening lazy Q4 file: %w", err)
 	}
+
+	axisHalf, err := readAxisHalf(f.file, axisType, f.ods.ShareSize(), size, 0, q4AxisIdx)
+	if err != nil {
+		return eds.AxisHalf{}, fmt.Errorf("reading axis half: %w", err)
+	}
+
+	return eds.AxisHalf{
+		Shares:   axisHalf,
+		IsParity: true,
+	}, nil
 }
